@@ -28,7 +28,7 @@
         }
     }
     
-    function _mutexTransaction(key, callback) {
+    function _mutexTransaction(key, callback, synchronous) {
         var xKey = key + "__MUTEX_x",
             yKey = key + "__MUTEX_y",
             getY = getter(yKey);
@@ -43,25 +43,30 @@
         
         localStorage[xKey] = myId;
         if (getY()) {
-            setTimeout(function () { _mutexTransaction(key, callback); }, 0);
-            return;
+            if (!synchronous)
+                setTimeout(function () { _mutexTransaction(key, callback); }, 0);
+            return false;
         }
         localStorage[yKey] = myId + "|" + (now() + 40);
         
         if (localStorage[xKey] !== myId) {
-            setTimeout(function () {
-                if (getY() !== myId) {
-                    setTimeout(function () { _mutexTransaction(key, callback); }, 0);
-                } else {
-                    criticalSection();
-                }
-            }, 50)
+            if (!synchronous) {
+                setTimeout(function () {
+                    if (getY() !== myId) {
+                        setTimeout(function () { _mutexTransaction(key, callback); }, 0);
+                    } else {
+                        criticalSection();
+                    }
+                }, 50)
+            }
+            return false;
         } else {
             criticalSection();
+            return true;
         }
     }
     
-    function lock(key, callback, maxDuration) {
+    function lockImpl(key, callback, maxDuration, synchronous) {
 
         maxDuration = maxDuration || 5000;
         
@@ -70,23 +75,31 @@
             mutexValue = myId + ":" + someNumber() + "|" + (now() + maxDuration);
             
         function restart () {
-            setTimeout(function () { lock(key, callback, maxDuration); }, 10);
+            setTimeout(function () { lockImpl(key, callback, maxDuration); }, 10);
         }
         
         if (getMutex()) {
-            restart();
-            return;
+            if (!synchronous)
+                restart();
+            return false;
         }
         
-        _mutexTransaction(key, function () {
+        var aquiredSynchronously = _mutexTransaction(key, function () {
             if (getMutex()) {
-                restart();
-                return;
+                if (!synchronous)
+                    restart();
+                return false;
             }
             localStorage[mutexKey] = mutexValue;
-            setTimeout(mutexAquired, 0)
-        });
+            if (!synchronous)
+                setTimeout(mutexAquired, 0)
+        }, synchronous);
         
+        if (synchronous && aquiredSynchronously) {
+            mutexAquired();
+            return true;
+        }
+        return false;
         function mutexAquired() {
             try {
                 callback();
@@ -102,5 +115,8 @@
         
     }
     
-    window.LockableStorage = { lock: lock };
+    window.LockableStorage = {
+        lock: function (key, callback, maxDuration) { lockImpl(key, callback, maxDuration, false) },
+        trySyncLock: function (key, callback, maxDuration) { return lockImpl(key, callback, maxDuration, true) }
+    };
 })();
